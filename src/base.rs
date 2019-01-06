@@ -320,7 +320,8 @@ pub type ImageEntryPoint = fn(Handle, *mut crate::system::SystemTable) -> Status
 /// Globally Unique Identifiers
 ///
 /// The `Guid` type represents globally unique identifiers as defined by RFC-4122 (i.e., only the
-/// `10x` variant is used). The type must be 64-bit aligned.
+/// `10x` variant is used), with the caveat that LE is used instead of BE. The type must be 64-bit
+/// aligned.
 ///
 /// Note that only the binary representation of Guids is stable. You are highly recommended to
 /// interpret Guids as 128bit integers.
@@ -343,18 +344,17 @@ pub type ImageEntryPoint = fn(Handle, *mut crate::system::SystemTable) -> Status
 ///   +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
 /// ```
 ///
-/// The individual fields are encoded as big-endian (network-byte-order). The Guid structure
-/// allows you direct access to these fields. Make sure to convert endianness when accessing the
-/// data. Data stored in Guid objects must be considered big-endian.
+/// The individual fields are encoded as little-endian. Accessors are provided for the Guid
+/// structure allowing access to these fields in native endian byte order.
 #[repr(C, align(8))]
 #[derive(Copy, Clone)]
 pub struct Guid {
-    pub time_low: u32,
-    pub time_mid: u16,
-    pub time_hi_and_version: u16,
-    pub clk_seq_hi_res: u8,
-    pub clk_seq_low: u8,
-    pub node: [u8; 6],
+    time_low: [u8; 4],
+    time_mid: [u8; 2],
+    time_hi_and_version: [u8; 2],
+    clk_seq_hi_res: u8,
+    clk_seq_low: u8,
+    node: [u8; 6],
 }
 
 impl PartialEq<bool> for Boolean {
@@ -520,11 +520,40 @@ impl Status {
 }
 
 impl Guid {
-    /// Initialize a Guid from its individual fields in native endianness
+    const fn u32_to_bytes_le(num: u32) -> [u8; 4] {
+        [
+            num as u8,
+            (num >> 8) as u8,
+            (num >> 16) as u8,
+            (num >> 24) as u8,
+        ]
+    }
+
+    const fn u32_from_bytes_le(bytes: &[u8; 4]) -> u32 {
+        (bytes[0] as u32) |
+        ((bytes[1] as u32) << 8) |
+        ((bytes[2] as u32) << 16) |
+        ((bytes[3] as u32) << 24)
+    }
+
+    const fn u16_to_bytes_le(num: u16) -> [u8; 2] {
+        [
+            num as u8,
+            (num >> 8) as u8,
+        ]
+    }
+
+    const fn u16_from_bytes_le(bytes: &[u8; 2]) -> u16 {
+        (bytes[0] as u16) |
+        ((bytes[1] as u16) << 8)
+    }
+
+    /// Initialize a Guid from its individual fields
     ///
-    /// This is the most basic initializer of a Guid object. It takes the individual fields in
-    /// native endian and creates the big-endian Guid object with it.
-    pub const fn from_native(
+    /// This function initializes a Guid object given the individual fields as specified in the
+    /// UEFI specification. That is, if you simply copy the literals from the specification into
+    /// your code, this function will correctly initialize the Guid object.
+    pub const fn from_fields(
         time_low: u32,
         time_mid: u16,
         time_hi_and_version: u16,
@@ -533,43 +562,26 @@ impl Guid {
         node: &[u8; 6],
     ) -> Guid {
         Guid {
-            time_low: time_low.to_be(),
-            time_mid: time_mid.to_be(),
-            time_hi_and_version: time_hi_and_version.to_be(),
-            clk_seq_hi_res: clk_seq_hi_res.to_be(),
-            clk_seq_low: clk_seq_low.to_be(),
+            time_low: Self::u32_to_bytes_le(time_low),
+            time_mid: Self::u16_to_bytes_le(time_mid),
+            time_hi_and_version: Self::u16_to_bytes_le(time_hi_and_version),
+            clk_seq_hi_res: clk_seq_hi_res,
+            clk_seq_low: clk_seq_low,
             node: *node,
         }
     }
 
-    /// Initialize a Guid from its individual fields as given in the specification
+    /// Access a Guid as individual fields
     ///
-    /// This function initializes a Guid object given the individual fields as specified in the
-    /// UEFI specification. That is, if you simply copy the literals from the specification into
-    /// your code, this function will correctly initialize the Guid object.
-    ///
-    /// The UEFI specification provides definitions of Guids as a set of integer literals. They
-    /// are meant to be directly assigned to the corresponding Guid fields. However, the
-    /// specification assumes little-endian systems, therefore the literals are provided in
-    /// big-endian format, so the conversion can be skipped. This will not work on big-endian
-    /// systems, though. Hence, this function applies the required conversions.
-    pub const fn from_spec(
-        time_low: u32,
-        time_mid: u16,
-        time_hi_and_version: u16,
-        clk_seq_hi_res: u8,
-        clk_seq_low: u8,
-        node: &[u8; 6],
-    ) -> Guid {
-        // The literals are given in inverted byte-order in the specification. Revert this to
-        // native order and then simply use the basic constructor.
-        Guid::from_native(
-            time_low.swap_bytes(),
-            time_mid.swap_bytes(),
-            time_hi_and_version.swap_bytes(),
-            clk_seq_hi_res.swap_bytes(),
-            clk_seq_low.swap_bytes(),
-            node,
+    /// This decomposes a Guid back into the individual fields as given in the specification.
+    pub const fn as_fields(&self) -> (u32, u16, u16, u8, u8, &[u8; 6]) {
+        (
+            Self::u32_from_bytes_le(&self.time_low),
+            Self::u16_from_bytes_le(&self.time_mid),
+            Self::u16_from_bytes_le(&self.time_hi_and_version),
+            self.clk_seq_hi_res,
+            self.clk_seq_low,
+            &self.node,
         )
     }
 
